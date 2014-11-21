@@ -6,6 +6,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Thinktecture.IdentityModel.Claims;
@@ -28,37 +29,43 @@ namespace Thinktecture.IdentityModel.Tokens.Http
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            if (_authN.Configuration.InheritHostClientIdentity == false)
+            if (!OwinAuthenticationPerformed())
             {
-                SetPrincipal(Principal.Anonymous);
-            }
-
-            try
-            {
-                // try to authenticate
-                // returns an anonymous principal if no credential was found
-                var principal = _authN.Authenticate(request);
-
-                if (principal == null)
+                if (_authN.Configuration.InheritHostClientIdentity == false)
                 {
-                    throw new InvalidOperationException("No principal set");
+                    SetPrincipal(Principal.Anonymous, request);
                 }
 
-                if (principal.Identity.IsAuthenticated)
+
+                try
                 {
-                    // check for token request - if yes send token back and return
-                    if (_authN.IsSessionTokenRequest(request))
+                    // try to authenticate
+                    // returns an anonymous principal if no credential was found
+                    var principal = _authN.Authenticate(request);
+
+                    if (principal == null)
                     {
-                        return SendSessionTokenResponse(principal);
+                        throw new InvalidOperationException("No principal set");
                     }
 
-                    // else set the principal
-                    SetPrincipal(principal);
+                    if (principal.Identity.IsAuthenticated)
+                    {
+                        // check for token request - if yes send token back and return
+                        if (_authN.IsSessionTokenRequest(request))
+                        {
+                            return SendSessionTokenResponse(principal);
+                        }
+
+                        // else set the principal
+                        //HttpRequestMessageExtensions.GetRequestContext(request);
+                        
+                        SetPrincipal(principal, request);
+                    }
                 }
-            }
-            catch(SecurityTokenValidationException)
-            {
-                return SendUnauthorizedResponse();
+                catch (SecurityTokenValidationException)
+                {
+                    return SendUnauthorizedResponse();
+                }
             }
 
             return base.SendAsync(request, cancellationToken).ContinueWith(
@@ -73,6 +80,12 @@ namespace Thinktecture.IdentityModel.Tokens.Http
 
                     return response;
                 });
+        }
+
+        private static bool OwinAuthenticationPerformed()
+        {
+            IIdentity currentIdentity = Thread.CurrentPrincipal.Identity;
+            return currentIdentity.IsAuthenticated && string.Equals(currentIdentity.AuthenticationType, "Federation", StringComparison.InvariantCultureIgnoreCase);
         }
 
         private Task<HttpResponseMessage> SendUnauthorizedResponse()
@@ -105,7 +118,7 @@ namespace Thinktecture.IdentityModel.Tokens.Http
             response.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(_authN.Configuration.DefaultAuthenticationScheme));
         }
 
-        protected virtual void SetPrincipal(ClaimsPrincipal principal)
+        protected virtual void SetPrincipal(ClaimsPrincipal principal, HttpRequestMessage request)
         {
             Thread.CurrentPrincipal = principal;
 
